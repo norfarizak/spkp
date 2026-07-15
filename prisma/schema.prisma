@@ -1,0 +1,646 @@
+// SPKP-JTM Prisma Schema
+// Sistem Pengurusan Kurikulum dan Pentauliahan Jabatan Tenaga Manusia
+// Backend: Supabase PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ================= MASTER / LOOKUP =================
+
+model Institution {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  type      String   // Kolej Komuniti / ATC / IKM / IKBN / Swasta
+  address   String?
+  phone     String?
+  email     String?
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  campuses   Campus[]
+  users      User[]
+  programs   Program[]
+  experts    Expert[]
+  accreds    AccreditationApplication[]
+}
+
+model Campus {
+  id           String   @id @default(cuid())
+  institutionId String
+  name         String
+  address      String?
+  createdAt    DateTime @default(now())
+
+  institution Institution @relation(fields: [institutionId], references: [id], onDelete: Cascade)
+}
+
+model Department {
+  id        String   @id @default(cuid())
+  name      String
+  code      String   @unique
+  createdAt DateTime @default(now())
+}
+
+// ================= ROLES & PERMISSIONS (RBAC) =================
+
+model Role {
+  id          String   @id @default(cuid())
+  code        String   @unique // e.g. 'SUPER_ADMIN','PEGAWAI_KURIKULUM'
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique // e.g. 'curriculum:create','noss:read'
+  name        String
+  module      String
+  createdAt   DateTime @default(now())
+
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+// ================= USERS & RBAC =================
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  passwordHash    String
+  fullName        String
+  icNumber        String?
+  staffId         String?
+  institutionId   String?
+  campusId        String?
+  departmentId    String?
+  phone           String?
+  avatarUrl       String?
+  status          String   @default("active") // active / suspended / pending
+  mfaEnabled      Boolean  @default(false)
+  mfaSecret       String?
+  mustResetPwd    Boolean  @default(false)
+  lastLoginAt     DateTime?
+  lastLoginIp     String?
+  failedAttempts  Int      @default(0)
+  lockedUntil     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  institution     Institution?  @relation(fields: [institutionId], references: [id])
+  roles           UserRole[]
+  loginHistory    LoginHistory[]
+  programsCreated Program[]     @relation("ProgramCreator")
+  // workflow
+  workflowOwned   WorkflowInstance[] @relation("WorkflowOwner")
+  workflowActions WorkflowTransition[] @relation("WorkflowActionBy")
+  auditActions    AuditLog[]    @relation("AuditByUser")
+  notifications   Notification[]
+  wimDocuments    WimDocument[] @relation("WimAuthor")
+  experts         Expert[]      @relation("ExpertUser")
+  accredApps      AccreditationApplication[] @relation("AccredApplicant")
+  auditFindings   AuditFinding[] @relation("AuditFindingAuditor")
+  auditSchedules  AuditSchedule[] @relation("AuditScheduleAuditor")
+  expertAppts     ExpertAppointment[] @relation("ExpertApptAssigner")
+  documents       Document[]    @relation("DocOwner")
+  docVersions     DocumentVersion[] @relation("DocVersionBy")
+
+  @@index([institutionId])
+}
+
+model UserRole {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  assignedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+}
+
+model LoginHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  loginAt   DateTime @default(now())
+  ipAddress String?
+  userAgent String?
+  success   Boolean  @default(true)
+  reason    String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ================= CURRICULUM =================
+
+model Program {
+  id            String   @id @default(cuid())
+  institutionId String
+  code          String   @unique
+  name          String
+  nossCode      String?
+  level         String?  // Sijil / Diploma / Diploma Lanjutan
+  totalCredit   Float    @default(0)
+  durationMonth Int      @default(0)
+  description   String?
+  status        String   @default("draft") // draft/review/approved/rejected/archived
+  version       Int      @default(1)
+  createdById   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  createdBy   User         @relation("ProgramCreator", fields: [createdById], references: [id])
+  courses     Course[]
+  cu          CompetencyUnit[]
+  cocu        CoCU[]
+  wim         WimDocument[]
+  accreds     AccreditationApplication[]
+
+  @@index([institutionId])
+  @@index([status])
+}
+
+model Course {
+  id        String   @id @default(cuid())
+  programId String
+  code      String
+  name      String
+  creditHour Float   @default(0)
+  semester  Int      @default(1)
+  createdAt DateTime @default(now())
+
+  program Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+  modules Module[]
+
+  @@unique([programId, code])
+}
+
+model Module {
+  id        String   @id @default(cuid())
+  courseId  String
+  code      String
+  name      String
+  hours     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  cus    CompetencyUnit[]
+}
+
+model CompetencyUnit {
+  id                 String   @id @default(cuid())
+  programId          String
+  moduleId           String?
+  cuCode             String
+  title              String
+  learningOutcome    String?
+  performanceCriteria String?
+  knowledge          String?
+  skill              String?
+  attitude           String?
+  toolsEquipment     String?
+  creditHour         Float    @default(0)
+  version            Int      @default(1)
+  status             String   @default("draft")
+  nossCuId           String?  // mapping to NOSS CU
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  program  Program  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  module   Module?  @relation(fields: [moduleId], references: [id])
+  outcomes LearningOutcome[]
+  wim      WimDocument[]
+  nossMapping NossMapping[]
+
+  @@index([programId])
+  @@index([status])
+}
+
+model CoCU {
+  id          String   @id @default(cuid())
+  programId   String
+  code        String
+  name        String
+  hours       Int      @default(0)
+  category    String?  // Kelab / Sukan / Khidmat Masyarakat
+  createdAt   DateTime @default(now())
+
+  program Program @relation(fields: [programId], references: [id], onDelete: Cascade)
+}
+
+model LearningOutcome {
+  id          String   @id @default(cuid())
+  cuId        String
+  code        String   // LO1, LO2
+  description String
+  band        Int      @default(1) // 1-4
+  createdAt   DateTime @default(now())
+
+  cu CompetencyUnit @relation(fields: [cuId], references: [id], onDelete: Cascade)
+}
+
+// ================= NOSS =================
+
+model NossLibrary {
+  id           String   @id @default(cuid())
+  nossCode     String   @unique
+  title        String
+  sector       String?  // Elektrik / Multimedia / Automotif etc
+  level        String?  // 1, 2, 3, 4, 5
+  version      String?
+  publishedYear Int?
+  status       String   @default("active")
+  description  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  cus      NossCu[]
+}
+
+model NossCu {
+  id             String   @id @default(cuid())
+  nossId         String
+  cuCode         String
+  title          String
+  learningOutcome String?
+  performanceCriteria String?
+  createdAt      DateTime @default(now())
+
+  noss     NossLibrary @relation(fields: [nossId], references: [id], onDelete: Cascade)
+  mappings NossMapping[]
+}
+
+model NossMapping {
+  id        String   @id @default(cuid())
+  cuId      String
+  nossCuId  String
+  confidenceScore Float @default(0) // 0-100
+  mappedById String?
+  mappedAt DateTime @default(now())
+
+  cu     CompetencyUnit @relation(fields: [cuId], references: [id], onDelete: Cascade)
+  nossCu NossCu         @relation(fields: [nossCuId], references: [id], onDelete: Cascade)
+
+  @@unique([cuId, nossCuId])
+}
+
+// ================= WIM =================
+
+model WimDocument {
+  id          String   @id @default(cuid())
+  programId   String
+  cuId        String
+  authorId    String
+  code        String
+  title       String
+  sheetType   String   // Assignment / Information / Work / Job / Operation Sheet
+  content     String   // markdown / structured text
+  rubric      Json?
+  answerScheme String?
+  status      String   @default("draft")
+  version     Int      @default(1)
+  isAiGenerated Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  program  Program         @relation(fields: [programId], references: [id])
+  cu       CompetencyUnit  @relation(fields: [cuId], references: [id])
+  author   User            @relation("WimAuthor", fields: [authorId], references: [id])
+}
+
+model WimTemplate {
+  id        String   @id @default(cuid())
+  name      String
+  sheetType String
+  content   String
+  category  String?
+  createdAt DateTime @default(now())
+}
+
+model Rubric {
+  id        String   @id @default(cuid())
+  wimId     String?
+  name      String
+  criteria  Json   // criteria array
+  maxScore  Int      @default(100)
+  createdAt DateTime @default(now())
+}
+
+// ================= ACCREDITATION (Pentauliahan) =================
+
+model AccreditationApplication {
+  id            String   @id @default(cuid())
+  applicationCode String @unique
+  institutionId String
+  programId     String?
+  applicantId   String
+  type          String   // Penuh / Sementara / Pembaharuan
+  status        String   @default("submitted") // submitted/self_assessment/audit/review/approved/rejected/expired
+  submittedAt   DateTime @default(now())
+  auditDate     DateTime?
+  approvedAt    DateTime?
+  expiryDate    DateTime?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  institution Institution @relation(fields: [institutionId], references: [id])
+  program     Program?    @relation(fields: [programId], references: [id])
+  applicant   User        @relation("AccredApplicant", fields: [applicantId], references: [id])
+  checklists  ComplianceChecklist[]
+  audits      AuditSchedule[]
+  certificates Certificate[]
+}
+
+model ComplianceChecklist {
+  id           String   @id @default(cuid())
+  applicationId String
+  item         String
+  requirement  String
+  isMet        Boolean  @default(false)
+  evidence     String?
+  remarks      String?
+  createdAt    DateTime @default(now())
+
+  application AccreditationApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+model AuditSchedule {
+  id            String   @id @default(cuid())
+  applicationId String
+  auditorId     String?
+  scheduledAt   DateTime
+  location      String?
+  status        String   @default("scheduled") // scheduled / completed / cancelled
+  createdAt     DateTime @default(now())
+
+  application AccreditationApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  auditor    User?          @relation("AuditScheduleAuditor", fields: [auditorId], references: [id])
+  findings    AuditFinding[]
+}
+
+model AuditFinding {
+  id            String   @id @default(cuid())
+  auditId       String
+  auditorId     String?
+  category      String   // Major / Minor / Observation
+  description   String
+  severity      String   @default("medium") // low / medium / high / critical
+  correctiveAction String?
+  status        String   @default("open") // open / in_progress / resolved
+  dueDate       DateTime?
+  resolvedAt    DateTime?
+  createdAt     DateTime @default(now())
+
+  audit    AuditSchedule @relation(fields: [auditId], references: [id], onDelete: Cascade)
+  auditor  User?         @relation("AuditFindingAuditor", fields: [auditorId], references: [id])
+}
+
+model Certificate {
+  id            String   @id @default(cuid())
+  applicationId String
+  certNumber    String   @unique
+  institutionName String
+  programName   String
+  type          String
+  issuedAt      DateTime @default(now())
+  expiryDate    DateTime
+  status        String   @default("active") // active / expired / revoked
+  signedBy      String?
+  fileUrl       String?
+
+  application AccreditationApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+}
+
+// ================= EXPERT PANEL =================
+
+model Expert {
+  id            String   @id @default(cuid())
+  userId        String?
+  fullName      String
+  icNumber      String?
+  email         String?
+  phone         String?
+  category      String   // Industri / Akademik / Penilai
+  expertiseArea String
+  qualification String?
+  experienceYear Int     @default(0)
+  organization  String?
+  availability  String   @default("available") // available / busy / unavailable
+  rating        Float    @default(0)
+  totalSessions Int      @default(0)
+  institutionId String?
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  institution Institution?        @relation(fields: [institutionId], references: [id])
+  user        User?                @relation("ExpertUser", fields: [userId], references: [id])
+  appointments ExpertAppointment[]
+  evaluations  ExpertEvaluation[]
+  honorariums  ExpertHonorarium[]
+}
+
+model ExpertAppointment {
+  id          String   @id @default(cuid())
+  expertId    String
+  assignerId  String?
+  purpose     String   // e.g. Penilaian Kurikulum, Mesyuarat Panel
+  projectId   String?
+  scheduledAt DateTime
+  durationHour Float   @default(1)
+  status      String   @default("scheduled") // scheduled / completed / cancelled
+  notes       String?
+  createdAt   DateTime @default(now())
+
+  expert     Expert @relation(fields: [expertId], references: [id], onDelete: Cascade)
+  assigner   User?  @relation("ExpertApptAssigner", fields: [assignerId], references: [id])
+  honorarium ExpertHonorarium?
+}
+
+model ExpertEvaluation {
+  id          String   @id @default(cuid())
+  expertId    String
+  targetType  String   // curriculum / wim / accreditation
+  targetId    String?
+  rating      Int      @default(3) // 1-5
+  recommendation String?
+  comments    String?
+  createdAt   DateTime @default(now())
+
+  expert Expert @relation(fields: [expertId], references: [id], onDelete: Cascade)
+}
+
+model ExpertHonorarium {
+  id            String   @id @default(cuid())
+  appointmentId String   @unique
+  expertId      String
+  amount        Float
+  currency      String   @default("MYR")
+  status        String   @default("pending") // pending / paid / cancelled
+  paidAt        DateTime?
+  createdAt     DateTime @default(now())
+
+  appointment ExpertAppointment @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  expert     Expert             @relation(fields: [expertId], references: [id], onDelete: Cascade)
+}
+
+// ================= WORKFLOW ENGINE =================
+
+model WorkflowInstance {
+  id           String   @id @default(cuid())
+  entityType   String   // program / wim_document / accreditation_application
+  entityId     String
+  currentStatus String  @default("draft")
+  currentOwnerId String?
+  slaDueAt     DateTime?
+  priority     String   @default("normal") // low / normal / high / urgent
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  currentOwner User?                @relation("WorkflowOwner", fields: [currentOwnerId], references: [id])
+  transitions  WorkflowTransition[]
+
+  @@index([entityType, entityId])
+  @@index([currentStatus])
+}
+
+model WorkflowTransition {
+  id           String   @id @default(cuid())
+  workflowId   String
+  fromStatus   String?
+  toStatus     String
+  actionById   String?
+  action       String   // submit / review / approve / reject / return / archive
+  remarks      String?
+  createdAt    DateTime @default(now())
+
+  workflow WorkflowInstance @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  actionBy User?             @relation("WorkflowActionBy", fields: [actionById], references: [id])
+}
+
+// ================= DOCUMENTS =================
+
+model Document {
+  id           String   @id @default(cuid())
+  name         String
+  category     String   // curriculum / wim / accreditation / certificate / general
+  module       String?
+  ownerId      String?
+  fileType     String   // pdf / docx / xlsx / image
+  fileSize     Int      @default(0)
+  description  String?
+  tags         String?  // comma separated
+  status       String   @default("active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  owner    User?             @relation("DocOwner", fields: [ownerId], references: [id])
+  versions DocumentVersion[]
+}
+
+model DocumentVersion {
+  id          String   @id @default(cuid())
+  documentId  String
+  version     Int      @default(1)
+  fileUrl     String?
+  uploadedById String?
+  checksum    String?
+  createdAt   DateTime @default(now())
+
+  document  Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  uploadedBy User?    @relation("DocVersionBy", fields: [uploadedById], references: [id])
+}
+
+// ================= NOTIFICATIONS =================
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  category  String   // workflow / system / accreditation / reminder / ai
+  title     String
+  message   String
+  link      String?
+  isRead    Boolean  @default(false)
+  priority  String   @default("normal") // low / normal / high
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+}
+
+model NotificationPreference {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  emailEnabled   Boolean @default(true)
+  inAppEnabled   Boolean @default(true)
+  whatsappEnabled Boolean @default(false)
+  pushEnabled    Boolean @default(true)
+  categories Json? // category opt-ins
+  updatedAt DateTime @updatedAt
+}
+
+// ================= AUDIT & SYSTEM =================
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  tableName    String
+  recordId     String
+  action       String   // INSERT / UPDATE / DELETE
+  oldValues    Json?
+  newValues    Json?
+  performedById String?
+  performedAt  DateTime @default(now())
+  ipAddress    String?
+  source       String   @default("user") // user / AI_GENERATED / system
+
+  performedBy User? @relation("AuditByUser", fields: [performedById], references: [id])
+
+  @@index([tableName, recordId])
+  @@index([performedAt])
+}
+
+model SystemSetting {
+  id    String  @id @default(cuid())
+  key   String  @unique
+  value String
+  category String?
+  updatedAt DateTime @updatedAt
+}
+
+model AiGenerationLog {
+  id        String   @id @default(cuid())
+  userId    String
+  feature   String   // wim_generator / curriculum_generator / rubric / mapping / chat / smart_search
+  input     Json
+  output    Json
+  model     String   @default("glm-5.2")
+  tokensUsed Int     @default(0)
+  createdAt DateTime @default(now())
+}
